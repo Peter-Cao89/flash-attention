@@ -57,10 +57,12 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     // https://github.com/kokkos/kokkos-kernels/issues/349
     // https://github.com/HazyResearch/flash-attention/issues/21
 
-    const int num_m_block = (params.seqlen_q + Kernel_traits::kBlockM - 1) / Kernel_traits::kBlockM;
+    const int num_m_block = (params.seqlen_q + Kernel_traits::kBlockM - 1) / Kernel_traits::kBlockM;/* 在M维度上block的数量 */
     dim3 grid(num_m_block, params.b, params.h);
+    /* 如果q与k的累积序列长度为空，且k的序列长度可以整除kBlockN，且q的序列长度可以整除kBlockM，则MN为 */
     const bool is_even_MN = params.cu_seqlens_q == nullptr && params.cu_seqlens_k == nullptr && params.seqlen_k % Kernel_traits::kBlockN == 0 && params.seqlen_q % Kernel_traits::kBlockM == 0;
     const bool is_even_K = params.d == Kernel_traits::kHeadDim;
+    /* 如果p_ptr不为空，则返回softmax */
     const bool return_softmax = params.p_ptr != nullptr;
     BOOL_SWITCH(is_even_MN, IsEvenMNConst, [&] {
         EVENK_SWITCH(is_even_K, IsEvenKConst, [&] {

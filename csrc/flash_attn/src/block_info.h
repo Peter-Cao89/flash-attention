@@ -8,6 +8,10 @@ namespace flash {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+/// @brief 定义了一个名为 BlockInfo 的结构体模板，用于在CUDA设备（GPU）上计算和管理与序列长度相关的信息。
+///        该结构体主要用于处理变长序列（variable-length sequences）的情况，
+///        特别是在处理注意力机制（如Transformer中的自注意力机制）时，序列长度可能会变化。
+/// @tparam Varlen 指示是否处理变长序列
 template<bool Varlen=true>
 struct BlockInfo {
 
@@ -33,12 +37,12 @@ struct BlockInfo {
         return sum_s_k == -1 ? bidb * batch_stride : uint32_t(sum_s_k) * row_stride;
     }
 
-    const int sum_s_q;
-    const int sum_s_k;
-    const int actual_seqlen_q;
+    const int sum_s_q;         /* 表示Query序列的累积长度。如果Varlen为false，或没有提供累积q序列长度，则其值为-1，否则为根据bidb取对应的值 */
+    const int sum_s_k;         /* 表示Value序列的累积长度。 */
+    const int actual_seqlen_q; /* 表示当前块的query序列的实际长度。如果Varlen为false，则直接使用params.seqlen_q；否则，为cu_seqlens_q[bidb + 1]-sum_s_q */
     // We have to have seqlen_k_cache declared before actual_seqlen_k, otherwise actual_seqlen_k is set to 0.
-    const int seqlen_k_cache;
-    const int actual_seqlen_k;
+    const int seqlen_k_cache;  /* 表示当前块的key序列的长度 */
+    const int actual_seqlen_k; /* 表示当前key序列的实际长度 */
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -18,6 +18,7 @@
 #include "dropout.h"
 #include "rotary.h"
 
+/// @brief 
 namespace flash {
 
 using namespace cute;
@@ -53,9 +54,26 @@ __forceinline__ __device__ auto get_lse_tile(const Params &params, const int bid
 }
 
 
+/// @brief 
+/// @tparam Kernel_traits 定义了内核的特性，如数据类型、内存布局、原子操作等
+/// @tparam Is_dropout 是否启用 Dropout
+/// @tparam Is_causal 是否启用因果掩码(Causal Mask)
+/// @tparam Is_local 是否启用局部注意力(Local Attention)
+/// @tparam Has_alibi 是否启用 ALiBi(Attention with Linear Biases)
+/// @tparam Is_even_MN M 和 N 维度是否是偶数
+/// @tparam Is_even_K K 维度是否是偶数
+/// @tparam Is_softcap 是否启用 SoftCap
+/// @tparam Return_softmax 是否返回 Softmax 结果
+/// @tparam Params 存储参数的结构体
+/// @param params 存储flash attention的参数
+/// @param bidb batch的线程块索引
+/// @param bidh head的线程块索引
+/// @param m_block 
+/// @return void 无返回
 template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_local, bool Has_alibi, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax, typename Params>
 inline __device__ void compute_attn_1rowblock(const Params &params, const int bidb, const int bidh, const int m_block) {
 
+    /* Element为数据类型(half_t或bfloat_t)，ElementAccum为累加器数据类型，index_t为索引类型 */
     using Element = typename Kernel_traits::Element;
     using ElementAccum = typename Kernel_traits::ElementAccum;
     using index_t = typename Kernel_traits::index_t;
@@ -66,12 +84,14 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     // The thread index.
     const int tidx = threadIdx.x;
 
-    constexpr int kBlockM = Kernel_traits::kBlockM;
-    constexpr int kBlockN = Kernel_traits::kBlockN;
-    constexpr int kHeadDim = Kernel_traits::kHeadDim;
-    constexpr int kNWarps = Kernel_traits::kNWarps;
+    constexpr int kBlockM = Kernel_traits::kBlockM;   /* M维度上分块的大小 */
+    constexpr int kBlockN = Kernel_traits::kBlockN;   /* N维度上的分块大小 */
+    constexpr int kHeadDim = Kernel_traits::kHeadDim; /* 注意力head的维度 */
+    constexpr int kNWarps = Kernel_traits::kNWarps;   /* 每个线程块中warp的数量 */
 
+    /* 使用Philox随机数生成器生成种子与offset，seed_offset为一个tuple， */
     auto seed_offset = at::cuda::philox::unpack(params.philox_args);
+    /* 实例化一个 Dropout 对象*/
     flash::Dropout dropout(std::get<0>(seed_offset), std::get<1>(seed_offset), params.p_dropout_in_uint8_t,
                            bidb, bidh, tidx, params.h);
 
@@ -82,7 +102,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         params.rng_state[1] = std::get<1>(seed_offset);
     }
 
+    /* 实例化一个BlockInfo对象，主要存储每个block中的信息 */
     const BlockInfo</*Varlen=*/!Is_even_MN> binfo(params, bidb);
+    /* 如果M维度block的大小与block的数量乘积超过了实际的q序列长度，则直接返回 */
     if (m_block * kBlockM >= binfo.actual_seqlen_q) return;
 
     const int n_block_min = !Is_local ? 0 : std::max(0, (m_block * kBlockM + binfo.actual_seqlen_k - binfo.actual_seqlen_q - params.window_size_left) / kBlockN);
@@ -140,6 +162,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     const index_t row_offset_p = ((bidb * params.h + bidh) * params.seqlen_q_rounded
         + m_block * kBlockM) * params.seqlen_k_rounded + (n_block_max - 1) * kBlockN;
 
+    /* 使用q_ptr创建一个non-owning的Tensor，用于global memory的访问 */
     Tensor mQ = make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(params.q_ptr)
                                           + binfo.q_offset(params.q_batch_stride, params.q_row_stride, bidb)),
                             make_shape(binfo.actual_seqlen_q, params.h, params.d),

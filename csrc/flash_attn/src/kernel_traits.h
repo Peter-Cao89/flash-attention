@@ -12,20 +12,34 @@
 
 using namespace cute;
 
-template<int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_, typename elem_type=cutlass::half_t>
+/// @brief 定义了FlashAttention内核的基本特性，包含了数据类型、内存布局、原子操作等等。
+/// @tparam elem_type 数据类型，默认为cutlass::half_t，可选项为bfloat16_t
+/// @tparam kHeadDim_ attention的head dimension
+/// @tparam kBlockM_ M维度上block的维度
+/// @tparam kBlockN_ N维度上block的维度
+/// @tparam kNWarps_ 每个线程块中使用warp数量
+template <int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_, typename elem_type = cutlass::half_t>
 struct Flash_kernel_traits {
-
+    /**
+     * 如果 CUDA 架构 >= 800(如 A100)，使用 elem_type 作为数据类型，并启用 cp.async(异步拷贝)功能。
+     * 否则，默认使用 cutlass::half_t，并禁用 cp.async。
+     **/
 #if defined(__CUDA_ARCH__) &&  __CUDA_ARCH__ >= 800
-    using Element = elem_type;
+    using Element = elem_type; /* 数据类型，可能是 elem_type 或 cutlass::half_t。 */
     static constexpr bool Has_cp_async = true;
 #else
     using Element = cutlass::half_t;
     static constexpr bool Has_cp_async = false;
 #endif
 
-    using ElementAccum = float;
-    using index_t = int64_t;
-
+    using ElementAccum = float; /* 累加器数据类型，固定为 float。 */
+    using index_t = int64_t;    /* 索引类型，固定为 int64_t。 */
+/**
+ * 矩阵乘法原子操作(MMA)的实现，根据CUDA架构选择不同的实现
+ * 对于 SM80 及以上架构，
+ * 如果数据类型为half_t则使用 SM80_16x8x16_F32F16F16F32_TN；
+ * 如果数据类型为bfloat_t，则使用 SM80_16x8x16_F32BF16BF16F32_TN
+ **/
 #if defined(__CUDA_ARCH__) &&  __CUDA_ARCH__ >= 800
     using MMA_Atom_Arch = std::conditional_t<
         std::is_same_v<elem_type, cutlass::half_t>,
@@ -33,9 +47,10 @@ struct Flash_kernel_traits {
         MMA_Atom<SM80_16x8x16_F32BF16BF16F32_TN>
     >;
 #else
-    using MMA_Atom_Arch = MMA_Atom<SM75_16x8x8_F32F16F16F32_TN>;
+    using MMA_Atom_Arch = MMA_Atom<SM75_16x8x8_F32F16F16F32_TN>; /* 对于 SM75 架构，使用 SM75_16x8x8_F32F16F16F32_TN。 */
 #endif
 
+/* SmemCopyAtom与SmemCopyAtomTransposed：共享内存的拷贝原子操作，根据cuda框架选择不同的实现 */
 #if defined(__CUDA_ARCH__) &&  __CUDA_ARCH__ >= 750
     using SmemCopyAtom = Copy_Atom<SM75_U32x4_LDSM_N, elem_type>;
     using SmemCopyAtomTransposed = Copy_Atom<SM75_U16x8_LDSM_T, elem_type>;
@@ -46,6 +61,15 @@ struct Flash_kernel_traits {
 };
 
 // If Share_Q_K_smem is true, that forces Is_Q_in_regs to be true
+/// @brief 继承自 Flash_kernel_traits，进一步定义了前向传播(forward pass)的 Flash Attention 内核特性。
+/// @tparam elem_type 数据类型，默认为cutlass::half_t，可选项为bfloat16_t
+/// @tparam Base 基类，即 Flash_kernel_traits。
+/// @tparam kHeadDim_ attention的head dimension
+/// @tparam kBlockM_ M维度上block的大小
+/// @tparam kBlockN_ N维度上block的大小
+/// @tparam kNWarps_ 每个线程块中使用warp数量
+/// @tparam Is_Q_in_regs_ 是否将 Q（查询矩阵）存储在寄存器中。
+/// @tparam Share_Q_K_smem_ 是否共享 Q 和 K（键矩阵）的共享内存。
 template<int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_, bool Is_Q_in_regs_=false, bool Share_Q_K_smem_=false, typename elem_type=cutlass::half_t,
          typename Base=Flash_kernel_traits<kHeadDim_, kBlockM_, kBlockN_, kNWarps_, elem_type> >
 struct Flash_fwd_kernel_traits : public Base {
@@ -60,22 +84,23 @@ struct Flash_fwd_kernel_traits : public Base {
     static constexpr bool Is_Q_in_regs = Is_Q_in_regs_ || Share_Q_K_smem;
 
     // The number of threads.
-    static constexpr int kNWarps = kNWarps_;
-    static constexpr int kNThreads = kNWarps * 32;
+    static constexpr int kNWarps = kNWarps_;       /* 每个线程块中的 warp 数量。 */
+    static constexpr int kNThreads = kNWarps * 32; /* 每个线程块中的线程数量，等于 kNWarps * 32。 */
 
-    static constexpr int kBlockM = kBlockM_;
-    static constexpr int kBlockN = kBlockN_;
-    static constexpr int kHeadDim = kHeadDim_;
-    static_assert(kHeadDim % 32 == 0);
-    static constexpr int kBlockKSmem = kHeadDim % 64 == 0 ? 64 : 32;
+    static constexpr int kBlockM = kBlockM_;                         /* M 维度上的分块大小。 */
+    static constexpr int kBlockN = kBlockN_;                         /* N 维度上的分块大小。 */
+    static constexpr int kHeadDim = kHeadDim_;                       /* 注意力 head dimension */
+    static_assert(kHeadDim % 32 == 0);                               /* 静态断言kHeadDim的维度可以被32整除 */
+    static constexpr int kBlockKSmem = kHeadDim % 64 == 0 ? 64 : 32; /* K 维度上的分块大小，分别用于共享内存和全局内存。 */
     static constexpr int kBlockKGmem = kHeadDim % 128 == 0 ? 128 : (kHeadDim % 64 == 0 ? 64 : 32);
-    static constexpr int kSwizzle = kBlockKSmem == 32 ? 2 : 3;
+    static constexpr int kSwizzle = kBlockKSmem == 32 ? 2 : 3; /* 如果kBlockKSmem为32，则kSwizzle的值为2，否则为3 */
 
     using TiledMma = TiledMMA<
         typename Base::MMA_Atom_Arch,
         Layout<Shape<Int<kNWarps>,_1,_1>>,  // 4x1x1 or 8x1x1 thread group
         Tile<Int<16 * kNWarps>, _16, _16>>;
 
+    /* 矩阵Q的共享内存布局 */
     using SmemLayoutAtomQ = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},
                     // This has to be kBlockKSmem, using kHeadDim gives wrong results for d=128
@@ -85,15 +110,18 @@ struct Flash_fwd_kernel_traits : public Base {
         SmemLayoutAtomQ{},
         Shape<Int<kBlockM>, Int<kHeadDim>>{}));
 
+    /* K 和 V 矩阵的共享内存布局。 */
     using SmemLayoutKV = decltype(tile_to_shape(
         SmemLayoutAtomQ{},
         Shape<Int<kBlockN>, Int<kHeadDim>>{}));
 
+    /* 矩阵V转置后的共享内存布局 */
     // https://github.com/ColfaxResearch/cutlass-kernels/blob/a222587e6d59b93ba704853d3946fb686d8b8892/src/fmha/fmha_forward.cu#L434
     using SmemLayoutVtransposed = decltype(
         composition(SmemLayoutKV{}, make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})));
     using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
 
+    /* 输出矩阵的共享内存布局 */
     using SmemLayoutAtomO = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},
                     Layout<Shape<Int<8>, Int<kBlockKSmem>>,
@@ -101,13 +129,17 @@ struct Flash_fwd_kernel_traits : public Base {
     using SmemLayoutO = decltype(tile_to_shape(
         SmemLayoutAtomO{},
         Shape<Int<kBlockM>, Int<kHeadDim>>{}));
+    /* 输出矩阵的共享内存的拷贝原子 */
     using SmemCopyAtomO = Copy_Atom<DefaultCopy, Element>;
     using SmemCopyAtomOaccum = Copy_Atom<DefaultCopy, ElementAccum>;
 
+    /* Q与KV矩阵的共享内存大小 */
     static constexpr int kSmemQSize = size(SmemLayoutQ{}) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
+    /* 总的共享内存大小。如果QK共享内存，则为二者的最大值，否则为二者之和 */
     static constexpr int kSmemSize = Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize;
 
+    /* 每次全局内存加载的元素数量，向量化加载 */
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
     static_assert(kHeadDim % kGmemElemsPerLoad == 0, "kHeadDim must be a multiple of kGmemElemsPerLoad");
     // Using kBlockKSmem here is 6-10% faster than kBlockKGmem for d=128 because of bank conflicts.
@@ -115,8 +147,10 @@ struct Flash_fwd_kernel_traits : public Base {
     // 0-63 and 64-127. If we have 16 threads per row for gmem read, when we write to smem,
     // thread 0 - 7 will write to the first page and thread 8 - 15 will write to the second page,
     // to the same banks.
+     /* 每次全局内存加载的线程数量 */
     static constexpr int kGmemThreadsPerRow = kBlockKSmem / kGmemElemsPerLoad;
     static_assert(kNThreads % kGmemThreadsPerRow == 0, "kNThreads must be a multiple of kGmemThreadsPerRow");
+    /* 全局内存的原子布局 */
     using GmemLayoutAtom = Layout<Shape <Int<kNThreads / kGmemThreadsPerRow>, Int<kGmemThreadsPerRow>>,
                                   Stride<Int<kGmemThreadsPerRow>, _1>>;
 
@@ -127,6 +161,8 @@ struct Flash_fwd_kernel_traits : public Base {
         SM80_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>,
         DefaultCopy
     >;
+
+    /* 全局内存的 Q、K、V 和 O 矩阵的拷贝操作。 */
     using GmemTiledCopyQKV = decltype(
         make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
                         GmemLayoutAtom{},
