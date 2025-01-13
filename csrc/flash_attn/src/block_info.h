@@ -27,6 +27,12 @@ struct BlockInfo {
         {
         }
 
+    /// @brief 计算query在内存地址的偏移量
+    /// @tparam index_t offset的数据类型
+    /// @param batch_stride batch的跨步值
+    /// @param row_stride 每行的跨步值
+    /// @param bidb 当前batch对应的block id
+    /// @return 如果q序列长度是固定的，则偏移量为bidb * batch_stride，否则按行Stride计算偏移
     template <typename index_t>
     __forceinline__ __device__ index_t q_offset(const index_t batch_stride, const index_t row_stride, const int bidb) const {
         return sum_s_q == -1 ? bidb * batch_stride : uint32_t(sum_s_q) * row_stride;

@@ -162,7 +162,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     const index_t row_offset_p = ((bidb * params.h + bidh) * params.seqlen_q_rounded
         + m_block * kBlockM) * params.seqlen_k_rounded + (n_block_max - 1) * kBlockN;
 
-    /* 使用q_ptr创建一个non-owning的Tensor，用于global memory的访问 */
+    /** 
+     * 使用q_ptr创建一个non-owning的Tensor，用于global memory的访问
+     * make_gmem_ptr函数用于标记内存是用于全局内存，
+     */
     Tensor mQ = make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(params.q_ptr)
                                           + binfo.q_offset(params.q_batch_stride, params.q_row_stride, bidb)),
                             make_shape(binfo.actual_seqlen_q, params.h, params.d),
