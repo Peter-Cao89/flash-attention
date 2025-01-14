@@ -87,13 +87,13 @@ struct Flash_fwd_kernel_traits : public Base {
     static constexpr int kNWarps = kNWarps_;       /* 每个线程块中的 warp 数量。 */
     static constexpr int kNThreads = kNWarps * 32; /* 每个线程块中的线程数量，等于 kNWarps * 32。 */
 
-    static constexpr int kBlockM = kBlockM_;                         /* M 维度上的分块大小。 */
-    static constexpr int kBlockN = kBlockN_;                         /* N 维度上的分块大小。 */
-    static constexpr int kHeadDim = kHeadDim_;                       /* 注意力 head dimension */
-    static_assert(kHeadDim % 32 == 0);                               /* 静态断言kHeadDim的维度可以被32整除 */
-    static constexpr int kBlockKSmem = kHeadDim % 64 == 0 ? 64 : 32; /* K 维度上的分块大小，分别用于共享内存和全局内存。 */
-    static constexpr int kBlockKGmem = kHeadDim % 128 == 0 ? 128 : (kHeadDim % 64 == 0 ? 64 : 32);
-    static constexpr int kSwizzle = kBlockKSmem == 32 ? 2 : 3; /* 如果kBlockKSmem为32，则kSwizzle的值为2，否则为3 */
+    static constexpr int kBlockM = kBlockM_;                                                       /* M 维度上的分块大小。 */
+    static constexpr int kBlockN = kBlockN_;                                                       /* N 维度上的分块大小。 */
+    static constexpr int kHeadDim = kHeadDim_;                                                     /* 注意力 head dimension */
+    static_assert(kHeadDim % 32 == 0);                                                             /* 静态断言kHeadDim的维度可以被32整除 */
+    static constexpr int kBlockKSmem = kHeadDim % 64 == 0 ? 64 : 32;                               /* K 维度上的分块大小，用于共享内存，如果HeadDim可以被64整除，则为64否则为32 */
+    static constexpr int kBlockKGmem = kHeadDim % 128 == 0 ? 128 : (kHeadDim % 64 == 0 ? 64 : 32); /* K 维度上的分块大小，用于全局内存 */
+    static constexpr int kSwizzle = kBlockKSmem == 32 ? 2 : 3;                                     /* 如果kBlockKSmem为32，则kSwizzle的值为2，否则为3 */
 
     using TiledMma = TiledMMA<
         typename Base::MMA_Atom_Arch,

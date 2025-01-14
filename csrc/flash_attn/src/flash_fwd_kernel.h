@@ -78,7 +78,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     using ElementAccum = typename Kernel_traits::ElementAccum;
     using index_t = typename Kernel_traits::index_t;
 
-    // Shared memory.
+    // Shared memory. 声明一个动态共享内存
     extern __shared__ char smem_[];
 
     // The thread index.
@@ -195,7 +195,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor gP = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.p_ptr) + row_offset_p),
                             Shape<Int<kBlockM>, Int<kBlockN>>{},
                             make_stride(params.seqlen_k_rounded, _1{}));
-
+    /**
+     * 调用make_smem_ptr函数将smem_的起始地址创建为一个共享内存Tensor
+     */
     Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)),
                             typename Kernel_traits::SmemLayoutQ{});
     // Careful we're using the same smem for sQ and sK | sV if Share_Q_K_smem;
