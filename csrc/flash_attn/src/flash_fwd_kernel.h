@@ -216,9 +216,13 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor sVt = make_tensor(sV.data(), typename Kernel_traits::SmemLayoutVtransposed{});
     Tensor sVtNoSwizzle = make_tensor(sV.data().get(), typename Kernel_traits::SmemLayoutVtransposedNoSwizzle{});
 
-    typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
-    auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
+    typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;       /* 将gmem_tiled_copy_QKV声明为一个TiledCopy类 */
+    auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);/* 调用TiledCopy类中的静态方法，返回一个ThrCopy对象 */
 
+    /** 
+     * 利用TiledCopy中的partition_S/D方法对QKV的全局内存
+     * 这段代码主要负责将全局内存拷贝到共享内存中
+     **/
     Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ);
     Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
     Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);  // (KCPY, KCPY_N, KCPY_K, nblocksN)
@@ -228,6 +232,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     typename Kernel_traits::TiledMma tiled_mma;
     auto thr_mma = tiled_mma.get_thread_slice(tidx);
+    /* 负责切分出每个线程对应的Fragment */
     Tensor tSrQ  = thr_mma.partition_fragment_A(sQ);                           // (MMA,MMA_M,MMA_K)
     Tensor tSrK  = thr_mma.partition_fragment_B(sK);                           // (MMA,MMA_N,MMA_K)
     Tensor tOrVt  = thr_mma.partition_fragment_B(sVtNoSwizzle);                // (MMA, MMA_K,MMA_N)

@@ -95,6 +95,9 @@ struct Flash_fwd_kernel_traits : public Base {
     static constexpr int kBlockKGmem = kHeadDim % 128 == 0 ? 128 : (kHeadDim % 64 == 0 ? 64 : 32); /* K 维度上的分块大小，用于全局内存,如果可以被128整除则为128，否则看是否可以被64整除用64，都不行则选择32 */
     static constexpr int kSwizzle = kBlockKSmem == 32 ? 2 : 3;                                     /* 如果kBlockKSmem为32，则kSwizzle的值为2，否则为3 */
 
+    /**
+     * 声明TiledMMA
+     */
     using TiledMma = TiledMMA<
         typename Base::MMA_Atom_Arch,
         Layout<Shape<Int<kNWarps>,_1,_1>>,  // 4x1x1 or 8x1x1 thread group
