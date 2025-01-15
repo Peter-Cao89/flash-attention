@@ -89,10 +89,10 @@ struct Flash_fwd_kernel_traits : public Base {
 
     static constexpr int kBlockM = kBlockM_;                                                       /* M 维度上的分块大小。 */
     static constexpr int kBlockN = kBlockN_;                                                       /* N 维度上的分块大小。 */
-    static constexpr int kHeadDim = kHeadDim_;                                                     /* 注意力 head dimension */
+    static constexpr int kHeadDim = kHeadDim_;                                                     /* 注意力 head dimension，目前支持的值有32,64,96,128,160,192,224,256 */
     static_assert(kHeadDim % 32 == 0);                                                             /* 静态断言kHeadDim的维度可以被32整除 */
     static constexpr int kBlockKSmem = kHeadDim % 64 == 0 ? 64 : 32;                               /* K 维度上的分块大小，用于共享内存，如果HeadDim可以被64整除，则为64否则为32 */
-    static constexpr int kBlockKGmem = kHeadDim % 128 == 0 ? 128 : (kHeadDim % 64 == 0 ? 64 : 32); /* K 维度上的分块大小，用于全局内存 */
+    static constexpr int kBlockKGmem = kHeadDim % 128 == 0 ? 128 : (kHeadDim % 64 == 0 ? 64 : 32); /* K 维度上的分块大小，用于全局内存,如果可以被128整除则为128，否则看是否可以被64整除用64，都不行则选择32 */
     static constexpr int kSwizzle = kBlockKSmem == 32 ? 2 : 3;                                     /* 如果kBlockKSmem为32，则kSwizzle的值为2，否则为3 */
 
     using TiledMma = TiledMMA<
@@ -100,12 +100,13 @@ struct Flash_fwd_kernel_traits : public Base {
         Layout<Shape<Int<kNWarps>,_1,_1>>,  // 4x1x1 or 8x1x1 thread group
         Tile<Int<16 * kNWarps>, _16, _16>>;
 
-    /* 矩阵Q的共享内存布局 */
-    using SmemLayoutAtomQ = decltype(
-        composition(Swizzle<kSwizzle, 3, 3>{},
+    /* 定义qkv矩阵在共享内存中的atom布局。shape为(8 * kBlockKSmem), stride为(kBlockKSmem,1)，同时对数据的Layout进行Swizzle操作。 */
+    using SmemLayoutAtomQ = decltype(                           /* decltype用于推导出表达式的类型，将推导出的类型赋值给SmemLayoutAtomQ */
+        composition(Swizzle<kSwizzle, 3, 3>{},                  /* composition将Swizzle对象与Layout对象组合在一起。一个Swizzle对象，用于对数据进行位操作，kSiwzzle为掩码位数， */
                     // This has to be kBlockKSmem, using kHeadDim gives wrong results for d=128
-                    Layout<Shape<_8, Int<kBlockKSmem>>,
-                           Stride<Int<kBlockKSmem>, _1>>{}));
+                    Layout<Shape<_8, Int<kBlockKSmem>>,         /* Layout的shape为8*32或8*64 */
+                           Stride<Int<kBlockKSmem>, _1>>{}));   /* 一个Layout对象，定义了数据的shape与stride。根据定义可以看出是row-major存储 */
+    /* 生成Q矩阵的共享内存tile，shape为gQ一样，LayoutAtom为SmemLayoutAtomQ */
     using SmemLayoutQ = decltype(tile_to_shape(
         SmemLayoutAtomQ{},
         Shape<Int<kBlockM>, Int<kHeadDim>>{}));
@@ -150,7 +151,11 @@ struct Flash_fwd_kernel_traits : public Base {
      /* 每次全局内存加载的线程数量 */
     static constexpr int kGmemThreadsPerRow = kBlockKSmem / kGmemElemsPerLoad;
     static_assert(kNThreads % kGmemThreadsPerRow == 0, "kNThreads must be a multiple of kGmemThreadsPerRow");
-    /* 全局内存的原子布局 */
+    /**
+     * 全局内存的原子布局。
+     * shape为(线程块线程数/每行线程数，每行的线程数)
+     * stride为(每行线程数，1)
+     **/
     using GmemLayoutAtom = Layout<Shape <Int<kNThreads / kGmemThreadsPerRow>, Int<kGmemThreadsPerRow>>,
                                   Stride<Int<kGmemThreadsPerRow>, _1>>;
 
@@ -158,11 +163,15 @@ struct Flash_fwd_kernel_traits : public Base {
     // from the same address by the same threadblock. This is slightly faster.
     using Gmem_copy_struct = std::conditional_t<
         Has_cp_async,
-        SM80_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>,
+        SM80_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>,/* 如果使用async copy */
         DefaultCopy
     >;
 
-    /* 全局内存的 Q、K、V 和 O 矩阵的拷贝操作。 */
+    /**
+     * 全局内存的 Q、K、V 和 O 矩阵的tile拷贝操作。
+     * make_tiled_copy函数负责生成一个TiledCopy对象，每个tile的Layout为(1, 8)
+     * GmemTiledCopyQKV实际上是一个TiledCopy对象
+     */
     using GmemTiledCopyQKV = decltype(
         make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
                         GmemLayoutAtom{},
@@ -172,6 +181,9 @@ struct Flash_fwd_kernel_traits : public Base {
                         GmemLayoutAtom{},
                         Layout<Shape<_1, _8>>{}));  // Val layout, 8 vals per store
 
+    /**
+     * 定义全局内存的原子输出累积布局
+     */
     using GmemLayoutAtomOaccum = std::conditional_t<
         kBlockKSmem == 32,
         Layout<Shape <_16, _8>,  // Thread layout, 8 threads per row

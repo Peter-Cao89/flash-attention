@@ -163,10 +163,12 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         + m_block * kBlockM) * params.seqlen_k_rounded + (n_block_max - 1) * kBlockN;
 
     /** 
-     * 使用q_ptr创建一个non-owning的Tensor，用于global memory的访问
+     * 使用q_ptr创建一个non-owning的Tensor，数据类型为Element，用于global memory的访问
      * make_gmem_ptr函数用于标记指针指向的内存是用于全局内存，偏移量根据binfo的q_offset接口计算
+     * make_shape定义了Tensor的shape，(seqlen_q, head nums, hidden_size)
+     * make_stride定义了Tensor的stride，行方向步长为q_row_stride，head维度步长为q_head_stride
      * make_shape+make_stride负责构建Layout对象。
-     * q的Shape为seqlen_q、head nums、hidden size
+     * mQ的Shape为seqlen_q、head nums、hidden size
      * 调用local_tile将mQ切分为(kBlockM, kHeadDim)
      * 在FlashAttention-2的算法1中，将Q矩阵切分为T_r = \frac{N}{B_r}个blocks，其中B_r就是kBlockM，d就是kHeadDim
      */
@@ -174,11 +176,18 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                                           + binfo.q_offset(params.q_batch_stride, params.q_row_stride, bidb)),
                             make_shape(binfo.actual_seqlen_q, params.h, params.d),
                             make_stride(params.q_row_stride, params.q_head_stride, _1{}));
+    /**
+     * 调用local_tile提取Tensor的一个tile。
+     * 输入的Tensor根据head的对应的block id提取，输入Tensor的shape为(seqlen_q, d)
+     * tiler的shape为(kBlockM,kHeadDim)
+     * 坐标位置为make_coord(m_block, 0)，m_block为行方向的起始索引，0为列方向的起始索引
+     */
     Tensor gQ = local_tile(mQ(_, bidh, _), Shape<Int<kBlockM>, Int<kHeadDim>>{},
                            make_coord(m_block, 0));  // (kBlockM, kHeadDim)
     /**
      * 使用方法如同矩阵Q，除了将Q的参数替换为K的参数外，按照FlashAttention-2的算法1中
      * 的要求，K与V矩阵blocks的维度为B_c * d,其中B_c就是kBlockN
+     * mK的shape为(actual_seqlen_k, h_k, d)
      */
     Tensor mK = make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(params.k_ptr)
                                           + binfo.k_offset(params.k_batch_stride, params.k_row_stride, bidb)),
