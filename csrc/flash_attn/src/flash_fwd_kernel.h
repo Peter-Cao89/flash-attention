@@ -217,7 +217,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor sVtNoSwizzle = make_tensor(sV.data().get(), typename Kernel_traits::SmemLayoutVtransposedNoSwizzle{});
 
     typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;       /* 将gmem_tiled_copy_QKV声明为一个TiledCopy类 */
-    auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);/* 调用TiledCopy类中的静态方法，返回一个ThrCopy对象 */
+    auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);/* 调用TiledCopy类中的静态方法，返回一个ThrCopy对象，表示线程slice对应的Tensor */
 
     /** 
      * 利用TiledCopy中的partition_S/D方法对QKV的全局内存

@@ -104,8 +104,9 @@ struct Flash_fwd_kernel_traits : public Base {
         Tile<Int<16 * kNWarps>, _16, _16>>;
 
     /* 定义qkv矩阵在共享内存中的atom布局。shape为(8 * kBlockKSmem), stride为(kBlockKSmem,1)，同时对数据的Layout进行Swizzle操作。 */
+    /* Swizzle 是一种内存访问优化技术，通过重新排列数据在内存中的存储顺序，减少 Bank Conflict（存储体冲突），从而提高内存访问效率。 */
     using SmemLayoutAtomQ = decltype(                           /* decltype用于推导出表达式的类型，将推导出的类型赋值给SmemLayoutAtomQ */
-        composition(Swizzle<kSwizzle, 3, 3>{},                  /* composition将Swizzle对象与Layout对象组合在一起。一个Swizzle对象，用于对数据进行位操作，kSiwzzle为掩码位数， */
+        composition(Swizzle<kSwizzle, 3, 3>{},                  /* composition将Swizzle对象与Layout对象组合在一起。一个Swizzle对象，用于对数据进行位操作，拥有优化共享内存的访问模式，kSiwzzle为掩码位数， */
                     // This has to be kBlockKSmem, using kHeadDim gives wrong results for d=128
                     Layout<Shape<_8, Int<kBlockKSmem>>,         /* Layout的shape为8*32或8*64 */
                            Stride<Int<kBlockKSmem>, _1>>{}));   /* 一个Layout对象，定义了数据的shape与stride。根据定义可以看出是row-major存储 */
@@ -119,8 +120,12 @@ struct Flash_fwd_kernel_traits : public Base {
         SmemLayoutAtomQ{},
         Shape<Int<kBlockN>, Int<kHeadDim>>{}));
 
-    /* 矩阵V转置后的共享内存布局 */
     // https://github.com/ColfaxResearch/cutlass-kernels/blob/a222587e6d59b93ba704853d3946fb686d8b8892/src/fmha/fmha_forward.cu#L434
+    /**
+     * 定义矩阵V转置后的共享内存布局
+     * SmemLayoutKV是KV的共享内存布局
+     * make_layout创建一个shape为(kHeadDim,kBlockN)，行优化的布局
+     * */
     using SmemLayoutVtransposed = decltype(
         composition(SmemLayoutKV{}, make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})));
     using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
