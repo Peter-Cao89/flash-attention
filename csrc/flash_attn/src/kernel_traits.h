@@ -34,24 +34,26 @@ struct Flash_kernel_traits {
 
     using ElementAccum = float; /* 累加器数据类型，固定为 float。 */
     using index_t = int64_t;    /* 索引类型，固定为 int64_t。 */
-/**
- * 矩阵乘法原子操作(MMA)的实现，根据CUDA架构选择不同的实现
- * 对于 SM80 及以上架构，
- * 如果数据类型为half_t则使用 SM80_16x8x16_F32F16F16F32_TN；
- * 如果数据类型为bfloat_t，则使用 SM80_16x8x16_F32BF16BF16F32_TN
- **/
-#if defined(__CUDA_ARCH__) &&  __CUDA_ARCH__ >= 800
+
+    /**
+     * 矩阵乘法原子操作(MMA)的实现，根据CUDA架构选择不同的实现
+     * 对于 SM80 及以上架构，
+     * 如果数据类型为half_t则使用 SM80_16x8x16_F32F16F16F32_TN；
+     * 如果数据类型为bfloat_t，则使用 SM80_16x8x16_F32BF16BF16F32_TN
+     **/
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
     using MMA_Atom_Arch = std::conditional_t<
         std::is_same_v<elem_type, cutlass::half_t>,
         MMA_Atom<SM80_16x8x16_F32F16F16F32_TN>,
-        MMA_Atom<SM80_16x8x16_F32BF16BF16F32_TN>
-    >;
+        MMA_Atom<SM80_16x8x16_F32BF16BF16F32_TN>>;
 #else
     using MMA_Atom_Arch = MMA_Atom<SM75_16x8x8_F32F16F16F32_TN>; /* 对于 SM75 架构，使用 SM75_16x8x8_F32F16F16F32_TN。 */
 #endif
 
-/* SmemCopyAtom与SmemCopyAtomTransposed：共享内存的拷贝原子操作，根据cuda框架选择不同的实现 */
-#if defined(__CUDA_ARCH__) &&  __CUDA_ARCH__ >= 750
+    /**
+     * SmemCopyAtom与SmemCopyAtomTransposed：共享内存的拷贝原子操作，根据cuda框架选择不同的实现
+     **/
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
     using SmemCopyAtom = Copy_Atom<SM75_U32x4_LDSM_N, elem_type>;
     using SmemCopyAtomTransposed = Copy_Atom<SM75_U16x8_LDSM_T, elem_type>;
 #else
@@ -68,8 +70,8 @@ struct Flash_kernel_traits {
 /// @tparam kBlockM_ M维度上block的大小
 /// @tparam kBlockN_ N维度上block的大小
 /// @tparam kNWarps_ 每个线程块中使用warp数量
-/// @tparam Is_Q_in_regs_ 是否将 Q（查询矩阵）存储在寄存器中。
-/// @tparam Share_Q_K_smem_ 是否共享 Q 和 K（键矩阵）的共享内存。
+/// @tparam Is_Q_in_regs_ 是否将 Q (查询矩阵)存储在寄存器中。
+/// @tparam Share_Q_K_smem_ 是否共享 Q 和 K (键矩阵)的共享内存。
 template<int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_, bool Is_Q_in_regs_=false, bool Share_Q_K_smem_=false, typename elem_type=cutlass::half_t,
          typename Base=Flash_kernel_traits<kHeadDim_, kBlockM_, kBlockN_, kNWarps_, elem_type> >
 struct Flash_fwd_kernel_traits : public Base {
@@ -96,7 +98,8 @@ struct Flash_fwd_kernel_traits : public Base {
     static constexpr int kSwizzle = kBlockKSmem == 32 ? 2 : 3;                                     /* 如果kBlockKSmem为32，则kSwizzle的值为2，否则为3 */
 
     /**
-     * 声明TiledMMA
+     * 声明TiledMMA，定义了一个CTA如何协同处理shape为(MNK)的矩阵乘法，里面有4个warps，即128个线程
+     * thread block循环可以处理MNK为(64, 16, 16)的矩阵乘法
      */
     using TiledMma = TiledMMA<
         typename Base::MMA_Atom_Arch,
@@ -110,31 +113,30 @@ struct Flash_fwd_kernel_traits : public Base {
                     // This has to be kBlockKSmem, using kHeadDim gives wrong results for d=128
                     Layout<Shape<_8, Int<kBlockKSmem>>,         /* Layout的shape为8*32或8*64 */
                            Stride<Int<kBlockKSmem>, _1>>{}));   /* 一个Layout对象，定义了数据的shape与stride。根据定义可以看出是row-major存储 */
+    
     /* 生成Q矩阵的共享内存tile，shape为gQ一样，LayoutAtom为SmemLayoutAtomQ */
     using SmemLayoutQ = decltype(tile_to_shape(
         SmemLayoutAtomQ{},
-        Shape<Int<kBlockM>, Int<kHeadDim>>{}));
+        Shape<Int<kBlockM>, Int<kHeadDim>>{})); /* shape为kBlockM, kHeadDim(Br, d) */
 
     /* K 和 V 矩阵的共享内存布局。 */
     using SmemLayoutKV = decltype(tile_to_shape(
         SmemLayoutAtomQ{},
-        Shape<Int<kBlockN>, Int<kHeadDim>>{}));
+        Shape<Int<kBlockN>, Int<kHeadDim>>{}));/* shape为kBlockN, kHeadDim(Bc, d) */
 
     // https://github.com/ColfaxResearch/cutlass-kernels/blob/a222587e6d59b93ba704853d3946fb686d8b8892/src/fmha/fmha_forward.cu#L434
     /**
      * 定义矩阵V转置后的共享内存布局
      * SmemLayoutKV是KV的共享内存布局
      * make_layout创建一个shape为(kHeadDim,kBlockN)，行优化的布局
-     * */
-    using SmemLayoutVtransposed = decltype(
-        composition(SmemLayoutKV{}, make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})));
+     **/
+    using SmemLayoutVtransposed = decltype(composition(SmemLayoutKV{}, make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})));
     using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
 
     /* 输出矩阵的共享内存布局 */
-    using SmemLayoutAtomO = decltype(
-        composition(Swizzle<kSwizzle, 3, 3>{},
-                    Layout<Shape<Int<8>, Int<kBlockKSmem>>,
-                           Stride<Int<kBlockKSmem>, _1>>{}));
+    using SmemLayoutAtomO = decltype(composition(Swizzle<kSwizzle, 3, 3>{},
+                                                 Layout<Shape<Int<8>, Int<kBlockKSmem>>,
+                                                        Stride<Int<kBlockKSmem>, _1>>{}));
     using SmemLayoutO = decltype(tile_to_shape(
         SmemLayoutAtomO{},
         Shape<Int<kBlockM>, Int<kHeadDim>>{}));
@@ -156,13 +158,15 @@ struct Flash_fwd_kernel_traits : public Base {
     // 0-63 and 64-127. If we have 16 threads per row for gmem read, when we write to smem,
     // thread 0 - 7 will write to the first page and thread 8 - 15 will write to the second page,
     // to the same banks.
-     /* 每次全局内存加载的线程数量 */
+    /**
+     * 每行每次全局内存加载的线程数量
+     * */
     static constexpr int kGmemThreadsPerRow = kBlockKSmem / kGmemElemsPerLoad;
     static_assert(kNThreads % kGmemThreadsPerRow == 0, "kNThreads must be a multiple of kGmemThreadsPerRow");
     /**
      * 全局内存的原子布局。
-     * shape为(线程块线程数/每行线程数，每行的线程数)
-     * stride为(每行线程数，1)
+     * shape为[行数(线程块线程数/每行线程数)，每行的线程数]
+     * stride为[每行线程数，1]
      **/
     using GmemLayoutAtom = Layout<Shape <Int<kNThreads / kGmemThreadsPerRow>, Int<kGmemThreadsPerRow>>,
                                   Stride<Int<kGmemThreadsPerRow>, _1>>;
@@ -171,23 +175,20 @@ struct Flash_fwd_kernel_traits : public Base {
     // from the same address by the same threadblock. This is slightly faster.
     using Gmem_copy_struct = std::conditional_t<
         Has_cp_async,
-        SM80_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>,/* 如果使用async copy */
-        DefaultCopy
-    >;
+        SM80_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>, /* 如果使用async copy，则使用SM80_CP_ASYNC_CACHEGLOBAL */
+        DefaultCopy>;                               /* 否则使用默认的拷贝DefaulCopy */
 
     /**
      * 全局内存的 Q、K、V 和 O 矩阵的tile拷贝操作。
      * make_tiled_copy函数负责生成一个TiledCopy对象，每个tile的Layout为(1, 8)
      * GmemTiledCopyQKV实际上是一个TiledCopy对象
      */
-    using GmemTiledCopyQKV = decltype(
-        make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
-                        GmemLayoutAtom{},
-                        Layout<Shape<_1, _8>>{}));  // Val layout, 8 vals per read
-    using GmemTiledCopyO = decltype(
-        make_tiled_copy(Copy_Atom<DefaultCopy, Element>{},
-                        GmemLayoutAtom{},
-                        Layout<Shape<_1, _8>>{}));  // Val layout, 8 vals per store
+    using GmemTiledCopyQKV = decltype(make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
+                                                      GmemLayoutAtom{},
+                                                      Layout<Shape<_1, _8>>{})); // Val layout, 8 vals per read
+    using GmemTiledCopyO = decltype(make_tiled_copy(Copy_Atom<DefaultCopy, Element>{},
+                                                    GmemLayoutAtom{},
+                                                    Layout<Shape<_1, _8>>{})); // Val layout, 8 vals per store
 
     /**
      * 定义全局内存的原子输出累积布局
