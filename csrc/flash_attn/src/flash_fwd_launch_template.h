@@ -57,7 +57,9 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     // https://github.com/kokkos/kokkos-kernels/issues/349
     // https://github.com/HazyResearch/flash-attention/issues/21
 
+    /* 在q序列长度维度上thread block的数量 */
     const int num_m_block = (params.seqlen_q + Kernel_traits::kBlockM - 1) / Kernel_traits::kBlockM;/* 在M维度上block的数量 */
+    /* x轴为num_m_block，y轴为batch size， z轴位head */
     dim3 grid(num_m_block, params.b, params.h);
     /* 如果q与k的累积序列长度为空，且k的序列长度可以整除kBlockN，且q的序列长度可以整除kBlockM，则is_even_MN为true，表示对于M、N是可以整除的 */
     const bool is_even_MN = params.cu_seqlens_q == nullptr && params.cu_seqlens_k == nullptr && params.seqlen_k % Kernel_traits::kBlockN == 0 && params.seqlen_q % Kernel_traits::kBlockM == 0;

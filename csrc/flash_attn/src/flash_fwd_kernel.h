@@ -86,8 +86,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     constexpr int kBlockM = Kernel_traits::kBlockM;   /* M维度上分块的大小 */
     constexpr int kBlockN = Kernel_traits::kBlockN;   /* N维度上的分块大小 */
-    constexpr int kHeadDim = Kernel_traits::kHeadDim; /* 注意力head的维度 */
-    constexpr int kNWarps = Kernel_traits::kNWarps;   /* 每个线程块中warp的数量 */
+    constexpr int kHeadDim = Kernel_traits::kHeadDim; /* 注意力head的维度，支持的head数量有32/64/96/128/160/192/224/256 */
+    constexpr int kNWarps = Kernel_traits::kNWarps;   /* 每个线程块中warp的数量,大部分情况都为4 */
 
     /* 使用Philox随机数生成器生成种子与offset，seed_offset为一个tuple， */
     auto seed_offset = at::cuda::philox::unpack(params.philox_args);
@@ -165,10 +165,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     /** 
      * 使用q_ptr创建一个non-owning的Tensor，数据类型为Element，用于global memory的访问
      * make_gmem_ptr函数用于标记指针指向的内存是用于全局内存，偏移量根据binfo的q_offset接口计算
-     * make_shape定义了Tensor的shape，(seqlen_q, head nums, hidden_size)
+     * make_shape定义了Tensor的shape，(seqlen_q, head_nums, hidden_size)
      * make_stride定义了Tensor的stride，行方向步长为q_row_stride，head维度步长为q_head_stride
      * make_shape+make_stride负责构建Layout对象。
-     * mQ的Shape为seqlen_q、head nums、hidden size
+     * mQ的Shape为seqlen_q、head_nums、hidden_size
      * 调用local_tile将mQ切分为(kBlockM, kHeadDim)
      * 在FlashAttention-2的算法1中，将Q矩阵切分为T_r = \frac{N}{B_r}个blocks，其中B_r就是kBlockM，d就是kHeadDim
      */
@@ -179,20 +179,24 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     /**
      * 调用local_tile提取Tensor的一个tile。
      * 输入的Tensor根据head的对应的block id提取，输入Tensor的shape为(seqlen_q, d)
-     * tiler的shape为(kBlockM,kHeadDim)
+     * tiler的shape为(kBlockM,kHeadDim)，也就是(Br x d)
      * 坐标位置为make_coord(m_block, 0)，m_block为行方向的起始索引，0为列方向的起始索引
      */
     Tensor gQ = local_tile(mQ(_, bidh, _), Shape<Int<kBlockM>, Int<kHeadDim>>{},
                            make_coord(m_block, 0));  // (kBlockM, kHeadDim)
     /**
-     * 使用方法如同矩阵Q，除了将Q的参数替换为K的参数外，按照FlashAttention-2的算法1中
-     * 的要求，K与V矩阵blocks的维度为B_c * d,其中B_c就是kBlockN
-     * mK的shape为(actual_seqlen_k, h_k, d)
+     * 使用方法如同矩阵Q，除了将Q的参数替换为K的参数外
+     * 在k_ptr的基础上加上当前thread block的偏移地址
+     * 按照FlashAttention-2的算法1中的要求，
+     * K与V矩阵blocks的维度为B_c * d,其中B_c就是kBlockN, d为head size(也就是kHeadDim)
+     * mK的shape为(seqlen_k, h_k, head size)
+     * 
      */
     Tensor mK = make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(params.k_ptr)
                                           + binfo.k_offset(params.k_batch_stride, params.k_row_stride, bidb)),
                             make_shape(binfo.actual_seqlen_k, params.h_k, params.d),
                             make_stride(params.k_row_stride, params.k_head_stride, _1{}));
+    /* 使用local_tile读取 */
     Tensor gK = local_tile(mK(_, bidh / params.h_h_k_ratio, _), Shape<Int<kBlockN>, Int<kHeadDim>>{},
                            make_coord(_, 0));  // (kBlockN, kHeadDim, nblocksN)
     Tensor mV = make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(params.v_ptr)

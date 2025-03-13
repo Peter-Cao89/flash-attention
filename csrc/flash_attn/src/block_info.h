@@ -17,8 +17,11 @@ struct BlockInfo {
 
     template<typename Params>
     __device__ BlockInfo(const Params &params, const int bidb)
-        : sum_s_q(!Varlen || params.cu_seqlens_q == nullptr ? -1 : params.cu_seqlens_q[bidb])
+        : /* 如果不为变长或cu_seqlens_q为空，则sum_s_q的值为-1，否则为cu_seqlens_q[bidb] */
+        sum_s_q(!Varlen || params.cu_seqlens_q == nullptr ? -1 : params.cu_seqlens_q[bidb])
+        /* 如果不为变长，或cu_seqlens_k为空，或is_seqlens_k_cumulative不为true， */
         , sum_s_k(!Varlen || params.cu_seqlens_k == nullptr || !params.is_seqlens_k_cumulative ? -1 : params.cu_seqlens_k[bidb])
+        /* 真实的长度 */
         , actual_seqlen_q(!Varlen || params.cu_seqlens_q == nullptr ? params.seqlen_q : params.cu_seqlens_q[bidb + 1] - sum_s_q)
         // If is_seqlens_k_cumulative, then seqlen_k is cu_seqlens_k[bidb + 1] - cu_seqlens_k[bidb].
         // Otherwise it's cu_seqlens_k[bidb], i.e., we use cu_seqlens_k to store the sequence lengths of K.

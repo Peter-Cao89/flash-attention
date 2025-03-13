@@ -30,10 +30,10 @@ void set_params_fprop(Flash_fwd_params &params,
                       const size_t d,
                       const size_t d_rounded,
                       // device pointers
-                      const at::Tensor q,
-                      const at::Tensor k,
-                      const at::Tensor v,
-                      at::Tensor out,
+                      const at::Tensor q, // batch_size x seqlen_q x num_heads x head_size
+                      const at::Tensor k, // batch_size x seqlen_k x num_heads_k x head_size
+                      const at::Tensor v, // batch_size x seqlen_k x num_heads_k x head_size
+                      at::Tensor out,     // batch_size x seqlen_q x num_heads x head_size
                       void *cu_seqlens_q_d,
                       void *cu_seqlens_k_d,
                       void *seqused_k,
@@ -57,21 +57,21 @@ void set_params_fprop(Flash_fwd_params &params,
     params.k_ptr = k.data_ptr();
     params.v_ptr = v.data_ptr();
     // All stride are in elements, not bytes.
-    params.q_row_stride = q.stride(-3);
-    params.k_row_stride = k.stride(-3);
-    params.v_row_stride = v.stride(-3);
-    params.q_head_stride = q.stride(-2);
-    params.k_head_stride = k.stride(-2);
-    params.v_head_stride = v.stride(-2);
+    params.q_row_stride = q.stride(-3);  /* num_heads x head_size */
+    params.k_row_stride = k.stride(-3);  /* num_heads_k x head_size */
+    params.v_row_stride = v.stride(-3);  /* num_heads_k x head_size */
+    params.q_head_stride = q.stride(-2); /* head_size */
+    params.k_head_stride = k.stride(-2); /* head_size */
+    params.v_head_stride = v.stride(-2); /* head_size */
     params.o_ptr = out.data_ptr();
     params.o_row_stride = out.stride(-3);
     params.o_head_stride = out.stride(-2);
 
     if (cu_seqlens_q_d == nullptr) {
-        params.q_batch_stride = q.stride(0);
-        params.k_batch_stride = k.stride(0);
-        params.v_batch_stride = v.stride(0);
-        params.o_batch_stride = out.stride(0);
+        params.q_batch_stride = q.stride(0);   /* seqlen_q x num_heads x head_size */
+        params.k_batch_stride = k.stride(0);   /* seqlen_q x num_heads_k x head_size */
+        params.v_batch_stride = v.stride(0);   /* seqlen_q x num_heads_k x head_size */
+        params.o_batch_stride = out.stride(0); /* seqlen_q x num_heads x head_size */
         if (seqlenq_ngroups_swapped) {
              params.q_batch_stride *= seqlen_q;
              params.o_batch_stride *= seqlen_q;
@@ -338,10 +338,10 @@ void set_params_alibi(Flash_fwd_params &params, c10::optional<at::Tensor> &alibi
 }
 
 std::vector<at::Tensor>
-mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x head_size
-        const at::Tensor &k,         // batch_size x seqlen_k x num_heads_k x head_size
-        const at::Tensor &v,         // batch_size x seqlen_k x num_heads_k x head_size
-        c10::optional<at::Tensor> &out_,             // batch_size x seqlen_q x num_heads x head_size
+mha_fwd(at::Tensor &q,                            // batch_size x seqlen_q x num_heads x head_size
+        const at::Tensor &k,                      // batch_size x seqlen_k x num_heads_k x head_size
+        const at::Tensor &v,                      // batch_size x seqlen_k x num_heads_k x head_size
+        c10::optional<at::Tensor> &out_,          // batch_size x seqlen_q x num_heads x head_size
         c10::optional<at::Tensor> &alibi_slopes_, // num_heads or batch_size x num_heads
         const float p_dropout,
         const float softmax_scale,
@@ -412,6 +412,7 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x head_size
 
     at::Tensor q_padded, k_padded, v_padded;
     if (head_size_og % 8 != 0) {
+        /* 如果head nums不能被8整除，则对齐进行填充 */
         q_padded = torch::nn::functional::pad(q, torch::nn::functional::PadFuncOptions({0, 8 - head_size_og % 8}));
         k_padded = torch::nn::functional::pad(k, torch::nn::functional::PadFuncOptions({0, 8 - head_size_og % 8}));
         v_padded = torch::nn::functional::pad(v, torch::nn::functional::PadFuncOptions({0, 8 - head_size_og % 8}));
@@ -437,10 +438,10 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x head_size
     }
 
     auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
-    const int head_size = round_multiple(head_size_og, 8);
-    const int head_size_rounded = round_multiple(head_size, 32);
-    const int seqlen_q_rounded = round_multiple(seqlen_q, 128);
-    const int seqlen_k_rounded = round_multiple(seqlen_k, 128);
+    const int head_size = round_multiple(head_size_og, 8);       /* head size必须是8的倍数 */
+    const int head_size_rounded = round_multiple(head_size, 32); /* head size必须是32的倍数 */
+    const int seqlen_q_rounded = round_multiple(seqlen_q, 128);  /* seqlen_q必须是128的倍数 */
+    const int seqlen_k_rounded = round_multiple(seqlen_k, 128);  /* seqlen_k必须是128的倍数 */
 
     // Otherwise the kernel will be launched from cuda:0 device
     // Cast to char to avoid compiler warning about narrowing
@@ -457,25 +458,30 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x head_size
     }
 
     Flash_fwd_params params;
-    set_params_fprop(params,
-                     batch_size,
-                     seqlen_q, seqlen_k,
-                     seqlen_q_rounded, seqlen_k_rounded,
-                     num_heads, num_heads_k,
-                     head_size, head_size_rounded,
-                     q_padded, k_padded, v_padded, out,
-                     /*cu_seqlens_q_d=*/nullptr,
-                     /*cu_seqlens_k_d=*/nullptr,
-                     /*seqused_k=*/nullptr,
-                     return_softmax ? p.data_ptr() : nullptr,
-                     softmax_lse.data_ptr(),
-                     p_dropout,
-                     softmax_scale,
+    set_params_fprop(params,                                  /* params */
+                     batch_size,                              /* b */
+                     seqlen_q,                                /* seqlen_q */
+                     seqlen_k,                                /* seqlen_k */
+                     seqlen_q_rounded,                        /* seqlen_q_rounded */
+                     seqlen_k_rounded,                        /* seqlen_k_rounded */
+                     num_heads,                               /* h */
+                     num_heads_k,                             /* h_k */
+                     head_size,                               /* d */
+                     head_size_rounded,                       /* d_rounded */
+                     q_padded,                                /* q */
+                     k_padded,                                /* k */
+                     v_padded,                                /* v */
+                     out,                                     /* out */
+                     nullptr,                                 /*cu_seqlens_q_d=*/
+                     nullptr,                                 /*cu_seqlens_k_d=*/
+                     nullptr,                                 /*seqused_k=*/
+                     return_softmax ? p.data_ptr() : nullptr, /* p_d */
+                     softmax_lse.data_ptr(),                  /* softmax_lse_d */
+                     p_dropout,                               /* p_dropout */
+                     softmax_scale,                           /* softmax_scale */
                      window_size_left,
                      window_size_right,
-                     softcap
-                     );
-
+                     softcap);
 
     set_params_splitkv(params, batch_size, num_heads,
                        head_size, seqlen_k, seqlen_q,

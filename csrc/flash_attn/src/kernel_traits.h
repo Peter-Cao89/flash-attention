@@ -103,8 +103,12 @@ struct Flash_fwd_kernel_traits : public Base {
      */
     using TiledMma = TiledMMA<
         typename Base::MMA_Atom_Arch,
-        Layout<Shape<Int<kNWarps>,_1,_1>>,  // 4x1x1 or 8x1x1 thread group
-        Tile<Int<16 * kNWarps>, _16, _16>>;
+        Layout<Shape<Int<kNWarps>, _1, _1>>, // 4x1x1 or 8x1x1 thread group
+        Tile<Int<16 * kNWarps>, _16, _16>>;  /* Tile的大小为(64, 16, 16) */
+    // using TiledMma = decltype(
+    //     make_tiled_mma(typename Base::MMA_Atom_Arch,
+    //     Layout<Shape<Int<kNWarps>, _1, _1>>{}, Tile<Int<16 * kNWarps>, _16, _16>{})
+    // );
 
     /* 定义qkv矩阵在共享内存中的atom布局。shape为(8 * kBlockKSmem), stride为(kBlockKSmem,1)，同时对数据的Layout进行Swizzle操作。 */
     /* Swizzle 是一种内存访问优化技术，通过重新排列数据在内存中的存储顺序，减少 Bank Conflict（存储体冲突），从而提高内存访问效率。 */
@@ -122,20 +126,20 @@ struct Flash_fwd_kernel_traits : public Base {
     /* K 和 V 矩阵的共享内存布局。 */
     using SmemLayoutKV = decltype(tile_to_shape(
         SmemLayoutAtomQ{},
-        Shape<Int<kBlockN>, Int<kHeadDim>>{}));/* shape为kBlockN, kHeadDim(Bc, d) */
+        Shape<Int<kBlockN>, Int<kHeadDim>>{})); /* shape为kBlockN, kHeadDim(Bc, d) */
 
     // https://github.com/ColfaxResearch/cutlass-kernels/blob/a222587e6d59b93ba704853d3946fb686d8b8892/src/fmha/fmha_forward.cu#L434
     /**
      * 定义矩阵V转置后的共享内存布局
      * SmemLayoutKV是KV的共享内存布局
-     * make_layout创建一个shape为(kHeadDim,kBlockN)，行优化的布局
+     * make_layout创建一个shape为(kHeadDim, kBlockN)，行优化的布局
      **/
     using SmemLayoutVtransposed = decltype(composition(SmemLayoutKV{}, make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})));
     using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
 
     /* 输出矩阵的共享内存布局 */
     using SmemLayoutAtomO = decltype(composition(Swizzle<kSwizzle, 3, 3>{},
-                                                 Layout<Shape<Int<8>, Int<kBlockKSmem>>,
+                                                 Layout<Shape<_8, Int<kBlockKSmem>>,
                                                         Stride<Int<kBlockKSmem>, _1>>{}));
     using SmemLayoutO = decltype(tile_to_shape(
         SmemLayoutAtomO{},
