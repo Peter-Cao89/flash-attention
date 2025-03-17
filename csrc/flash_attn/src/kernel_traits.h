@@ -121,12 +121,12 @@ struct Flash_fwd_kernel_traits : public Base {
     /* 生成Q矩阵的共享内存tile，shape为gQ一样，LayoutAtom为SmemLayoutAtomQ */
     using SmemLayoutQ = decltype(tile_to_shape(
         SmemLayoutAtomQ{},
-        Shape<Int<kBlockM>, Int<kHeadDim>>{})); /* shape为kBlockM, kHeadDim(Br, d) */
+        Shape<Int<kBlockM>, Int<kHeadDim>>{})); /* shape为(kBlockM, kHeadDim),(Br, d) */
 
     /* K 和 V 矩阵的共享内存布局。 */
     using SmemLayoutKV = decltype(tile_to_shape(
         SmemLayoutAtomQ{},
-        Shape<Int<kBlockN>, Int<kHeadDim>>{})); /* shape为kBlockN, kHeadDim(Bc, d) */
+        Shape<Int<kBlockN>, Int<kHeadDim>>{})); /* shape为(kBlockN, kHeadDim),(Bc, d) */
 
     // https://github.com/ColfaxResearch/cutlass-kernels/blob/a222587e6d59b93ba704853d3946fb686d8b8892/src/fmha/fmha_forward.cu#L434
     /**

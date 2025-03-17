@@ -35,16 +35,16 @@ struct Qkv_params {
      * q/k/v_batch_stride为QKV的batch维度的步长
      * q/k/v_row_stride为QKV在row维度的步长
      * q/k/v_head_stride为QKV在head维度的步长
-     * */
-    index_t q_batch_stride;
-    index_t k_batch_stride;
-    index_t v_batch_stride;
-    index_t q_row_stride;
-    index_t k_row_stride;
-    index_t v_row_stride;
-    index_t q_head_stride;
-    index_t k_head_stride;
-    index_t v_head_stride;
+     **/
+    index_t q_batch_stride; /* seqlen_q x num_heads x head_size */
+    index_t k_batch_stride; /* seqlen_q x num_heads_k x head_size */
+    index_t v_batch_stride; /* seqlen_q x num_heads_k x head_size */
+    index_t q_row_stride;   /* num_heads x head_size */
+    index_t k_row_stride;   /* num_heads_k x head_size */
+    index_t v_row_stride;   /* num_heads_k x head_size */
+    index_t q_head_stride;  /* head_size */
+    index_t k_head_stride;  /* head_size */
+    index_t v_head_stride;  /* head_size */
 
     // The number of heads.MHA/MQA/GQA中的head数量
     int h, h_k;

@@ -71,7 +71,7 @@ __forceinline__ __device__ auto get_lse_tile(const Params &params, const int bid
 /// @param m_block 
 /// @return void 无返回
 template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_local, bool Has_alibi, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax, typename Params>
-inline __device__ void compute_attn_1rowblock(const Params &params, const int bidb, const int bidh, const int m_block) {
+inline __device__ void compute_attn_1rowblock(const Params &params, const int bidb/* batch block id */, const int bidh/* head block id */, const int m_block/* sequence block id */) {
 
     /* Element为数据类型(half_t或bfloat_t)，ElementAccum为累加器数据类型，index_t为索引类型 */
     using Element = typename Kernel_traits::Element;
@@ -175,10 +175,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor mQ = make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(params.q_ptr)
                                           + binfo.q_offset(params.q_batch_stride, params.q_row_stride, bidb)),
                             make_shape(binfo.actual_seqlen_q, params.h, params.d),
-                            make_stride(params.q_row_stride, params.q_head_stride, _1{}));
+                            make_stride(params.q_row_stride/* params.d * params.h */, params.q_head_stride/* params.d */, _1{}));
     /**
      * 调用local_tile提取Tensor的一个tile。
-     * 输入的Tensor根据head的对应的block id提取，输入Tensor的shape为(seqlen_q, d)
+     * 输入的Tensor根据每个head的对应的block id提取，输入Tensor的shape为(seqlen_q, d)
      * tiler的shape为(kBlockM,kHeadDim)，也就是(Br x d)
      * 坐标位置为make_coord(m_block, 0)，m_block为行方向的起始索引，0为列方向的起始索引
      */
@@ -190,7 +190,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
      * 按照FlashAttention-2的算法1中的要求，
      * K与V矩阵blocks的维度为B_c * d,其中B_c就是kBlockN, d为head size(也就是kHeadDim)
      * mK的shape为(seqlen_k, h_k, head size)
-     * 
+     * stide为(head_size * num_heads, head_size)
      */
     Tensor mK = make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(params.k_ptr)
                                           + binfo.k_offset(params.k_batch_stride, params.k_row_stride, bidb)),
@@ -209,7 +209,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                             Shape<Int<kBlockM>, Int<kBlockN>>{},
                             make_stride(params.seqlen_k_rounded, _1{}));
     /**
-     * 调用make_smem_ptr函数将smem_的起始地址创建为一个共享内存Tensor
+     * 创建Q的shared memory tensor
+     * 调用make_smem_ptr函数将smem_创建为一个共享内存Tensor，布局采用的
+     * 布局为SmemLayoutQ
      */
     Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)),
                             typename Kernel_traits::SmemLayoutQ{});
