@@ -168,7 +168,7 @@ struct Flash_fwd_kernel_traits : public Base {
     static constexpr int kGmemThreadsPerRow = kBlockKSmem / kGmemElemsPerLoad;
     static_assert(kNThreads % kGmemThreadsPerRow == 0, "kNThreads must be a multiple of kGmemThreadsPerRow");
     /**
-     * 全局内存的原子布局。
+     * 全局内存中的布局(Layout)原子(Atom)。
      * shape为[行数(线程块线程数/每行线程数)，每行的线程数]
      * stride为[每行线程数，1]
      **/

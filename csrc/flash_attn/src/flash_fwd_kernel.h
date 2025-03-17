@@ -226,8 +226,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);/* 调用TiledCopy类中的静态方法，返回一个ThrCopy对象，表示线程slice对应的Tensor */
 
     /** 
-     * 利用TiledCopy中的partition_S/D方法对QKV的全局内存
-     * 这段代码主要负责将全局内存拷贝到共享内存中
+     * 利用ThrCopy中的partition_S/D方法获取QKV在ource与destination状态空间中当前的张量
+     * tQgQ表示Q在全局内存中当前线程需要拷贝的源tensor 
+     * tQsQ表示Q在全局内存中当前线程需要复制到目标tensor
      **/
     Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ);
     Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
@@ -298,11 +299,18 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor tKVpKV = make_tensor<bool>(make_shape(size<2>(tKsK)));
 
     // Set predicates for k bounds
-    if (!Is_even_K) {
-        #pragma unroll
-        for (int k = 0; k < size(tQpQ); ++k) { tQpQ(k) = get<1>(tQcQ(0, 0, k)) < params.d; }
-        #pragma unroll
-        for (int k = 0; k < size(tKVpKV); ++k) { tKVpKV(k) = get<1>(tKVcKV(0, 0, k)) < params.d; }
+    if (!Is_even_K)
+    {
+#pragma unroll
+        for (int k = 0; k < size(tQpQ); ++k)
+        {
+            tQpQ(k) = get<1>(tQcQ(0, 0, k)) < params.d;
+        }
+#pragma unroll
+        for (int k = 0; k < size(tKVpKV); ++k)
+        {
+            tKVpKV(k) = get<1>(tKVcKV(0, 0, k)) < params.d;
+        }
     }
 
     // Prologue
@@ -359,7 +367,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     constexpr int n_masking_steps = (!Is_causal && !Is_local)
         ? 1
         : ((Is_even_MN && Is_causal) ? cute::ceil_div(kBlockM, kBlockN) : cute::ceil_div(kBlockM, kBlockN) + 1);
-    #pragma unroll
+
+#pragma unroll
     for (int masking_step = 0; masking_step < n_masking_steps; ++masking_step, --n_block) {
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
         clear(acc_s);
@@ -503,7 +512,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor taccOsO = smem_thr_copy_O.partition_D(sO);     // ((Atom,AtomNum),PIPE_M,PIPE_N)
 
     // sO has the same size as sQ, so we don't need to sync here.
-    if (Kernel_traits::Share_Q_K_smem) { __syncthreads(); }
+    if (Kernel_traits::Share_Q_K_smem)
+    {
+        __syncthreads();
+    }
 
     cute::copy(smem_tiled_copy_O, taccOrO, taccOsO);
 
@@ -544,9 +556,13 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     // Repeat the partitioning with identity layouts
     Tensor tOcO = gmem_thr_copy_O.partition_D(cO);                           // (ACPY,ACPY_M,ACPY_K) -> (blk_m,blk_k)
     Tensor tOpO = make_tensor<bool>(make_shape(size<2>(tOgO)));
-    if (!Is_even_K) {
-        #pragma unroll
-        for (int k = 0; k < size(tOpO); ++k) { tOpO(k) = get<1>(tOcO(0, 0, k)) < params.d; }
+    if (!Is_even_K)
+    {
+#pragma unroll
+        for (int k = 0; k < size(tOpO); ++k)
+        {
+            tOpO(k) = get<1>(tOcO(0, 0, k)) < params.d;
+        }
     }
     // Clear_OOB_K must be false since we don't want to write zeros to gmem
     flash::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/false, /*Clear_OOB_K=*/false>(
