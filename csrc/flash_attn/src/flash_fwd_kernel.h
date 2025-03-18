@@ -162,6 +162,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     const index_t row_offset_p = ((bidb * params.h + bidh) * params.seqlen_q_rounded
         + m_block * kBlockM) * params.seqlen_k_rounded + (n_block_max - 1) * kBlockN;
 
+    /**
+     * =====================================================================
+     * 定义需要从global memory拷贝到shared memory的数据
+     * =====================================================================
+     */
     /** 
      * 使用q_ptr创建一个non-owning的Tensor，数据类型为Element，用于global memory的访问
      * make_gmem_ptr函数用于标记指针指向的内存是用于全局内存，偏移量根据binfo的q_offset接口计算
@@ -211,18 +216,26 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     /**
      * 创建Q的shared memory tensor
      * 调用make_smem_ptr函数将smem_创建为一个共享内存Tensor，布局采用的
-     * 布局为SmemLayoutQ
+     * 布局为SmemLayoutQ，shape为(kBlockM, kHeadDim),(Br, d)
      */
     Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)),
                             typename Kernel_traits::SmemLayoutQ{});
     // Careful we're using the same smem for sQ and sK | sV if Share_Q_K_smem;
+    /**
+     * 构建KV以及VT的共享内存张量
+     * 其中V的Transpose用于GEMM-II中
+     */
     Tensor sK = make_tensor(sQ.data() + (Kernel_traits::Share_Q_K_smem ? 0 : size(sQ)),
                             typename Kernel_traits::SmemLayoutKV{});
     Tensor sV = make_tensor(sK.data() + size(sK), typename Kernel_traits::SmemLayoutKV{});
     Tensor sVt = make_tensor(sV.data(), typename Kernel_traits::SmemLayoutVtransposed{});
     Tensor sVtNoSwizzle = make_tensor(sV.data().get(), typename Kernel_traits::SmemLayoutVtransposedNoSwizzle{});
 
-    typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;       /* 将gmem_tiled_copy_QKV声明为一个TiledCopy类 */
+    /**
+     * gmem_tiled_copy_QKV用于奖tile从global memory拷贝到shared memory中
+     * gmem_tiled_copy_QKV类型为TiledCopy
+     **/
+    typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);/* 调用TiledCopy类中的静态方法，返回一个ThrCopy对象，表示线程slice对应的Tensor */
 
     /** 
@@ -230,13 +243,18 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
      * tQgQ表示Q在全局内存中当前线程需要拷贝的源tensor 
      * tQsQ表示Q在全局内存中当前线程需要复制到目标tensor
      **/
-    Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ);
-    Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
+    Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ);  // (QCPY, QCPY_M, QCPY_N)
+    Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);  
     Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);  // (KCPY, KCPY_N, KCPY_K, nblocksN)
     Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
     Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);  // (VCPY, VCPY_N, VCPY_K, nblocksN)
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
 
+    /**
+     * =====================================================================
+     * 定义需要从shared memory拷贝到register的数据
+     * =====================================================================
+     */
     typename Kernel_traits::TiledMma tiled_mma;
     auto thr_mma = tiled_mma.get_thread_slice(tidx);
     /* 负责切分出每个线程对应的Fragment */
@@ -313,12 +331,26 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
     }
 
+    /**
+     * =====================================================================
+     * 执行copy操作，将QKV从global memory拷贝到shared memory中
+     * =====================================================================
+     */
     // Prologue
 
     // We don't need to clear the sQ smem tiles since we'll only write out the valid outputs
+    /**
+     * 将tQgQ中的数据拷贝到tQsQ中
+     */
     flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tQgQ, tQsQ, tQcQ, tQpQ,
                                        binfo.actual_seqlen_q - m_block * kBlockM);
-    if (Kernel_traits::Is_Q_in_regs) { cute::cp_async_fence(); }
+    /**
+     * 如果Q在寄存器中，则进行执行cp.async.commit_group指令。负责将未提交的异步拷贝指令进行提交
+     **/
+    if (Kernel_traits::Is_Q_in_regs)
+    {
+        cute::cp_async_fence();
+    }
 
     // // if (cute::thread(1, 0)) { print(tQsQ); }
     // // Tensor sQNoSwizzle = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)), typename Kernel_traits::SmemLayoutQNoSwizzle{});
