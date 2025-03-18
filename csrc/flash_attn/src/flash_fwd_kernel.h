@@ -257,7 +257,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
      */
     typename Kernel_traits::TiledMma tiled_mma;
     auto thr_mma = tiled_mma.get_thread_slice(tidx);
-    /* 负责切分出每个线程对应的Fragment */
+    /**
+     * 负责切分出每个线程对应的Fragment
+     * 每个线程位于寄存器上tensor
+     */
     Tensor tSrQ  = thr_mma.partition_fragment_A(sQ);                           // (MMA,MMA_M,MMA_K)
     Tensor tSrK  = thr_mma.partition_fragment_B(sK);                           // (MMA,MMA_N,MMA_K)
     Tensor tOrVt  = thr_mma.partition_fragment_B(sVtNoSwizzle);                // (MMA, MMA_K,MMA_N)
