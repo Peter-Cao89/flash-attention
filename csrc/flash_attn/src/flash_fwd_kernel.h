@@ -364,6 +364,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         __syncthreads();
         Tensor tSrQ_copy_view = smem_thr_copy_Q.retile_D(tSrQ);
         CUTE_STATIC_ASSERT_V(size<1>(tSsQ) == size<1>(tSrQ_copy_view));            // M
+        /* 将共享内存的数据拷贝到寄存器上 */
         cute::copy(smem_tiled_copy_Q, tSsQ, tSrQ_copy_view);
         __syncthreads();
     }

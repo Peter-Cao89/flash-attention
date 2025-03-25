@@ -130,17 +130,24 @@ static __device__ __forceinline__ T run(T x, Operator &op) {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <bool A_in_regs = false, bool B_in_regs = false, typename Tensor0, typename Tensor1,
+template <bool A_in_regs = false,
+          bool B_in_regs = false,
+          typename Tensor0, typename Tensor1,
           typename Tensor2, typename Tensor3, typename Tensor4,
           typename TiledMma, typename TiledCopyA, typename TiledCopyB,
           typename ThrCopyA, typename ThrCopyB>
-__forceinline__ __device__ void gemm(Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const &tCsA,
-                                     Tensor4 const &tCsB, TiledMma tiled_mma,
+__forceinline__ __device__ void gemm(Tensor0 &acc,
+                                     Tensor1 &tCrA, Tensor2 &tCrB,
+                                     Tensor3 const &tCsA, Tensor4 const &tCsB,
+                                     TiledMma tiled_mma,
                                      TiledCopyA smem_tiled_copy_A, TiledCopyB smem_tiled_copy_B,
                                      ThrCopyA smem_thr_copy_A, ThrCopyB smem_thr_copy_B)
 {
+    /* tCrA的M维度与acc的M维度大小相同 */
     CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));  // MMA_M
+    /* tCrA的N维度与acc的N维度大小相同 */
     CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));  // MMA_N
+    /* 确保tCrA与tCrB的K维度大小相同 */
     CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB)); // MMA_K
     Tensor tCrA_copy_view = smem_thr_copy_A.retile_D(tCrA);
     CUTE_STATIC_ASSERT_V(size<1>(tCsA) == size<1>(tCrA_copy_view)); // M
