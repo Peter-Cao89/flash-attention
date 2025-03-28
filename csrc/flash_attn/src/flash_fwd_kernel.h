@@ -334,17 +334,15 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
     }
 
+    // Prologue
+
+    // We don't need to clear the sQ smem tiles since we'll only write out the valid outputs
     /**
      * =====================================================================
      * 执行copy操作，将QKV从global memory拷贝到shared memory中
      * =====================================================================
      */
-    // Prologue
-
-    // We don't need to clear the sQ smem tiles since we'll only write out the valid outputs
-    /**
-     * 将tQgQ中的数据拷贝到tQsQ中
-     */
+    // 将tQgQ中的数据拷贝到tQsQ中，也就是将Q中的tiling从全局内存拷贝到共享内存中
     flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tQgQ, tQsQ, tQcQ, tQpQ,
                                        binfo.actual_seqlen_q - m_block * kBlockM);
     /**
@@ -370,13 +368,16 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     }
 
     int n_block = n_block_max - 1;
+
     // We don't need to clear the sK smem tiles since we'll mask out the scores anyway.
+    /* 我们将K的tile从全局内存拷贝到共享内存中 */
     flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block), tKsK, tKVcKV, tKVpKV,
                                        binfo.actual_seqlen_k - n_block * kBlockN);
     cute::cp_async_fence();
     // if (threadIdx.x == 0 && blockIdx.y == 0 && blockIdx.z < 2) { print(tKgK); }
     // __syncthreads();
 
+    /* 将Q的tile从共享内存中拷贝到寄存器中 */
     if (Kernel_traits::Is_Q_in_regs && !Kernel_traits::Share_Q_K_smem) {
         flash::cp_async_wait<1>();
         __syncthreads();
@@ -385,11 +386,16 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         cute::copy(smem_tiled_copy_Q, tSsQ, tSrQ_copy_view);
     }
 
+    /**
+     * FlashAttention-2算法1中第5行的，令Q = 0的操作
+     */
     clear(acc_o);
 
     flash::Softmax<2 * size<1>(acc_o)> softmax;
 
-    const float alibi_slope = !Has_alibi || params.alibi_slopes_ptr == nullptr ? 0.0f : reinterpret_cast<float *>(params.alibi_slopes_ptr)[bidb * params.alibi_slopes_batch_stride + bidh] / params.scale_softmax;
+    const float alibi_slope = (!Has_alibi || params.alibi_slopes_ptr == nullptr)
+                                  ? 0.0f
+                                  : reinterpret_cast<float *>(params.alibi_slopes_ptr)[bidb * params.alibi_slopes_batch_stride + bidh] / params.scale_softmax;
     flash::Mask<Is_causal, Is_local, Has_alibi> mask(binfo.actual_seqlen_k, binfo.actual_seqlen_q, params.window_size_left, params.window_size_right, alibi_slope);
 
     // For performance reason, we separate out two kinds of iterations:
@@ -401,11 +407,12 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     // If not even_N, then seqlen_k might end in the middle of a block. In that case we need to
     // mask 2 blocks (e.g. when kBlockM == kBlockN), not just 1.
     constexpr int n_masking_steps = (!Is_causal && !Is_local)
-        ? 1
-        : ((Is_even_MN && Is_causal) ? cute::ceil_div(kBlockM, kBlockN) : cute::ceil_div(kBlockM, kBlockN) + 1);
+                                        ? 1
+                                        : ((Is_even_MN && Is_causal) ? cute::ceil_div(kBlockM, kBlockN) : cute::ceil_div(kBlockM, kBlockN) + 1);
 
 #pragma unroll
     for (int masking_step = 0; masking_step < n_masking_steps; ++masking_step, --n_block) {
+        /* 分配S张量，Shape为B_r * B_c */
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
         clear(acc_s);
         flash::cp_async_wait<0>();
@@ -422,12 +429,13 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
         cute::cp_async_fence();
 
+        /* 执行QK的矩阵乘法 */
         flash::gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
         );
         // if (cute::thread0()) { print(acc_s); }
-        if constexpr (Is_softcap){
+        if constexpr (Is_softcap) {
             apply_softcap(acc_s, params.softcap);
         }
 
