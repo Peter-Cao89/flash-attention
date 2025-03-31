@@ -260,6 +260,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     /**
      * 负责切分出每个线程对应的Fragment
      * 每个线程位于寄存器上tensor
+     * 参考链接https://github.com/NVIDIA/cutlass/issues/1052#issuecomment-1680718745，
+     * tS指的是MMA中覆盖线程的布局，
+     * tSrQ理解为一个寄存器(register)张量Q按照S覆盖的线程布局进行分区
      */
     Tensor tSrQ  = thr_mma.partition_fragment_A(sQ);                           // (MMA,MMA_M,MMA_K)
     Tensor tSrK  = thr_mma.partition_fragment_B(sK);                           // (MMA,MMA_N,MMA_K)
@@ -267,6 +270,13 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     Tensor tSgS  = thr_mma.partition_C(gP);
 
+    /**
+     * 参考https://github.com/NVIDIA/cutlass/issues/1393#issuecomment-1991915393可知，
+     * acc_o is a rank-3 tensor which has shape (MMA, MMA_M, MMA_K).
+     * 第一个模式MMA称为"vector"模式 或 "atom"模式 -- 也就是单个atom使用的全部数据
+     * 另外两个模式(MMA_M/MMA_K)是M与K上的剩余模式，也就是沿着张量的M-mode或K-mode，
+     * MMA atom需要issue的次数。以填充满Shape为<kBlockM, kHeadDim>
+     */
     Tensor acc_o = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kHeadDim>>{});  // MMA, MMA_M, MMA_K
 
     //
@@ -343,7 +353,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
      * =====================================================================
      */
     // 将tQgQ中的数据拷贝到tQsQ中，也就是将Q中的tiling从全局内存拷贝到共享内存中
-    flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tQgQ, tQsQ, tQcQ, tQpQ,
+    flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tQgQ/* S */, tQsQ/* D */, tQcQ, tQpQ,
                                        binfo.actual_seqlen_q - m_block * kBlockM);
     /**
      * 如果Q在寄存器中，则进行执行cp.async.commit_group指令。负责将未提交的异步拷贝指令进行提交
@@ -414,7 +424,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     for (int masking_step = 0; masking_step < n_masking_steps; ++masking_step, --n_block) {
         /* 分配S张量，Shape为B_r * B_c */
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
+        /* 将S张量清0 */
         clear(acc_s);
+        /* 等待所有的cp.async指令执行完成 */
         flash::cp_async_wait<0>();
         __syncthreads();
 
@@ -429,7 +441,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
         cute::cp_async_fence();
 
-        /* 执行QK的矩阵乘法 */
+        /* 执行QK的矩阵乘法，并将结果放置于acc_s中 */
         flash::gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
@@ -439,6 +451,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             apply_softcap(acc_s, params.softcap);
         }
 
+        /* 对S矩阵应用mask操作 */
         mask.template apply_mask<Is_causal, Is_even_MN>(
             acc_s, n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
         );
