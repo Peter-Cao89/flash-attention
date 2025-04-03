@@ -1,0 +1,26 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/csrc/flash_attn/src",
+                "${workspaceFolder}/csrc/cutlass/include",
+                "${workspaceFolder}/csrc/cutlass/tools/util/include",
+                "${workspaceFolder}/csrc/cutlass/tools/library/include",
+                "${workspaceFolder}/csrc/cutlass/tools/profiler/include",
+                "/usr/include/python3.10/",
+                "~/.local/lib/python3.10/site-packages/torch/include/",
+                "~/.local/lib/python3.10/site-packages/torch/include/torch/csrc/api/include",
+                "/usr/include"
+            ],
+            "defines": [
+                "__CUDA_ARCH__=800"
+            ],
+            "compilerPath": "/usr/bin/g++",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "linux-clang-x64"
+        }
+    ],
+    "version": 4
+}

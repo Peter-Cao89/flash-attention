@@ -107,7 +107,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     /* 如果M维度block的大小与block的数量乘积超过了实际的q序列长度，则直接返回 */
     if (m_block * kBlockM >= binfo.actual_seqlen_q) return;
 
-    const int n_block_min = !Is_local ? 0 : std::max(0, (m_block * kBlockM + binfo.actual_seqlen_k - binfo.actual_seqlen_q - params.window_size_left) / kBlockN);
+    const int n_block_min = !Is_local
+                                ? 0
+                                : std::max(0,
+                                           (m_block * kBlockM + binfo.actual_seqlen_k - binfo.actual_seqlen_q - params.window_size_left) / kBlockN);
     int n_block_max = cute::ceil_div(binfo.actual_seqlen_k, kBlockN);
     if (Is_causal || Is_local) {
         n_block_max = std::min(n_block_max,
@@ -441,7 +444,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
         cute::cp_async_fence();
 
-        /* 执行QK的矩阵乘法，并将结果放置于acc_s中 */
+        /* 执行QK(大小为B_r x B_c)的矩阵乘法，并将结果放置于acc_s中 */
         flash::gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
@@ -507,9 +510,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         clear(acc_s);
         flash::cp_async_wait<0>();
         __syncthreads();
+        /* 将n_block对应的V tile从global拷贝到shared中 */
         flash::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV);
+        /* 发出cp.async指令 */
         cute::cp_async_fence();
-
+        /* 执行S=Q*K^T算法，S的大小为B_r x B_c。 */
         flash::gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s, tSrQ, tSrK, tSsQ, tSsK, tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
@@ -520,6 +525,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         flash::cp_async_wait<0>();
         __syncthreads();
+        /* 提前将下一步的K tile从global拷贝到shared */
         if (n_block > n_block_min) {
             flash::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKsK, tKVcKV, tKVpKV);
             // This cp_async_fence needs to be in the if block, otherwise the synchronization
@@ -531,11 +537,14 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             acc_s, n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
         );
 
+        /* 执行online softmax计算 */
         softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_local>(acc_s, acc_o, params.scale_softmax_log2);
 
         Tensor rP = flash::convert_type<Element>(acc_s);
         int block_row_idx = m_block * (kBlockM / 16) + tidx / 32;
         int block_col_idx = n_block * (kBlockN / 32);
+
+        /* 下面应用dropout */
         if (Return_softmax) {
             Tensor rP_drop = make_fragment_like(rP);
             cute::copy(rP, rP_drop);
@@ -600,11 +609,16 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     // Convert to ((2, 2), MMA_M, MMA_K) then take only the row indices.
     Tensor taccOcO_row = logical_divide(taccOcO, Shape<_2>{})(make_coord(0, _), _, 0);
     CUTE_STATIC_ASSERT_V(size(lse) == size(taccOcO_row));                     // MMA_M
-    if (get<1>(taccOcO_row(0)) == 0) {
-        #pragma unroll
-        for (int mi = 0; mi < size(lse); ++mi) {
+    if (get<1>(taccOcO_row(0)) == 0)
+    {
+#pragma unroll
+        for (int mi = 0; mi < size(lse); ++mi)
+        {
             const int row = get<0>(taccOcO_row(mi));
-            if (row < binfo.actual_seqlen_q - m_block * kBlockM) { gLSE(row) = lse(mi); }
+            if (row < binfo.actual_seqlen_q - m_block * kBlockM)
+            {
+                gLSE(row) = lse(mi);
+            }
         }
     }
 
